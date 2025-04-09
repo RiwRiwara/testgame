@@ -1,0 +1,822 @@
+<!DOCTYPE html>
+<html>
+	<head>
+		<title>Matter.js Ragdoll Co-op Game</title>
+		<style>
+			body {
+				margin: 0;
+				overflow: hidden;
+				position: relative;
+			}
+			canvas {
+				display: block;
+			}
+			#tutorial {
+				position: fixed;
+				top: 10px;
+				left: 10px;
+				background: rgba(0, 0, 0, 0.7);
+				color: white;
+				padding: 10px;
+				border-radius: 5px;
+				font-family: Arial, sans-serif;
+				font-size: 14px;
+				z-index: 10;
+			}
+		</style>
+	</head>
+	<body>
+		<div id="tutorial">
+			<strong>Controls:</strong><br />
+			Hold Left Click: Move Toward Mouse<br />
+			Release Left Click: Slash Sword<br />
+			Mouse Hover: Aim Sword<br />
+			Space: Jump
+		</div>
+
+		<script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.19.0/matter.min.js"></script>
+		<script>
+			// Matter.js module aliases
+			const Engine = Matter.Engine;
+			const Render = Matter.Render;
+			const Runner = Matter.Runner;
+			const Bodies = Matter.Bodies;
+			const Composite = Matter.Composite;
+			const Constraint = Matter.Constraint;
+			const Vector = Matter.Vector;
+			const Mouse = Matter.Mouse;
+			const MouseConstraint = Matter.MouseConstraint;
+
+			// Create engine and world
+			const engine = Engine.create();
+			const world = engine.world;
+
+			// Define map dimensions
+			const mapWidth = 2000;
+			const mapHeight = 1000;
+
+			// Create renderer with camera
+			const render = Render.create({
+				element: document.body,
+				engine: engine,
+				options: {
+					width: window.innerWidth,
+					height: window.innerHeight,
+					wireframes: false,
+					background: "#f0f0f0",
+				},
+			});
+
+			// Map borders
+			const borderThickness = 50;
+			const ground = Bodies.rectangle(
+				mapWidth / 2,
+				mapHeight,
+				mapWidth,
+				borderThickness,
+				{
+					isStatic: true,
+					render: { fillStyle: "#666" },
+				}
+			);
+			const topBorder = Bodies.rectangle(
+				mapWidth / 2,
+				0,
+				mapWidth,
+				borderThickness,
+				{
+					isStatic: true,
+					render: { fillStyle: "#666" },
+				}
+			);
+			const leftBorder = Bodies.rectangle(
+				0,
+				mapHeight / 2,
+				borderThickness,
+				mapHeight,
+				{
+					isStatic: true,
+					render: { fillStyle: "#666" },
+				}
+			);
+			const rightBorder = Bodies.rectangle(
+				mapWidth,
+				mapHeight / 2,
+				borderThickness,
+				mapHeight,
+				{
+					isStatic: true,
+					render: { fillStyle: "#666" },
+				}
+			);
+
+			// Players object to store local and remote players
+			const players = {};
+			let localPlayerId = null;
+
+			// WebSocket connection
+			const ws = new WebSocket("ws://localhost:3000");
+			ws.onopen = () => {
+				console.log("Connected to WebSocket server");
+			};
+			ws.onmessage = (event) => {
+				const data = JSON.parse(event.data);
+				if (data.type === "init") {
+					localPlayerId = data.id;
+					createPlayer(localPlayerId, 400, 200, "#ff6666"); // Local player
+				} else if (data.type === "update") {
+					updateRemotePlayer(data);
+				}
+			};
+
+			// Function to create a player
+			function createPlayer(id, x, y, color) {
+				const head = Bodies.circle(x, y, 20, {
+					friction: 0.1,
+					frictionAir: 0.05,
+					restitution: 0.3,
+					render: { fillStyle: color.replace("6666", "9999") },
+				});
+				const torso = Bodies.rectangle(x, y + 50, 30, 50, {
+					friction: 0.1,
+					frictionAir: 0.05,
+					restitution: 0.3,
+					render: { fillStyle: color },
+				});
+				const leftArm = Bodies.rectangle(x - 30, y + 50, 25, 45, {
+					friction: 0.1,
+					frictionAir: 0.05,
+					restitution: 0.3,
+					render: { fillStyle: color },
+				});
+				const rightArm = Bodies.rectangle(x + 30, y + 60, 25, 100, {
+					friction: 0.1,
+					frictionAir: 0.05,
+					restitution: 0.3,
+					render: { fillStyle: color },
+				});
+				const leftLeg = Bodies.rectangle(x - 10, y + 100, 20, 50, {
+					friction: 0.1,
+					frictionAir: 0.05,
+					restitution: 0.3,
+					render: { fillStyle: color },
+				});
+				const rightLeg = Bodies.rectangle(x + 10, y + 100, 20, 50, {
+					friction: 0.1,
+					frictionAir: 0.05,
+					restitution: 0.3,
+					render: { fillStyle: color },
+				});
+				const sword = Bodies.rectangle(x + 100, y + 50, 50, 20, {
+					friction: 0,
+					restitution: 0.5,
+					render: {
+						sprite: {
+							texture:
+								"https://t3.ftcdn.net/jpg/05/52/15/72/360_F_552157245_6hDyZwmQ0r9GuQwVRj4tPPBkrfmGZVaC.jpg",
+							xScale: 0.15,
+							yScale: 0.1,
+						},
+					},
+					isSensor: false,
+				});
+
+				const headTorso = Constraint.create({
+					bodyA: head,
+					bodyB: torso,
+					length: 30,
+					stiffness: 0.9,
+				});
+				const torsoLeftArm = Constraint.create({
+					bodyA: torso,
+					pointA: { x: -20, y: -20 },
+					bodyB: leftArm,
+					length: 20,
+					stiffness: 0.9,
+				});
+				const torsoRightArm = Constraint.create({
+					bodyA: torso,
+					pointA: { x: 20, y: -20 },
+					bodyB: rightArm,
+					length: 30,
+					stiffness: 0.9,
+				});
+				const torsoLeftLeg = Constraint.create({
+					bodyA: torso,
+					pointA: { x: -10, y: 30 },
+					bodyB: leftLeg,
+					length: 30,
+					stiffness: 0.9,
+				});
+				const torsoRightLeg = Constraint.create({
+					bodyA: torso,
+					pointA: { x: 10, y: 30 },
+					bodyB: rightLeg,
+					length: 30,
+					stiffness: 0.9,
+				});
+				const swordConstraint = Constraint.create({
+					bodyA: rightArm,
+					pointA: { x: 0, y: 50 },
+					bodyB: sword,
+					pointB: { x: -20, y: 0 },
+					length: 30,
+					stiffness: 0.3,
+				});
+
+				const playerParts = [
+					head,
+					torso,
+					leftArm,
+					rightArm,
+					leftLeg,
+					rightLeg,
+					sword,
+				];
+				const playerConstraints = [
+					headTorso,
+					torsoLeftArm,
+					torsoRightArm,
+					torsoLeftLeg,
+					torsoRightLeg,
+					swordConstraint,
+				];
+
+				Composite.add(world, [...playerParts, ...playerConstraints]);
+
+				players[id] = {
+					torso,
+					sword,
+					parts: playerParts,
+					constraints: playerConstraints,
+					isMouseDown: false,
+					swordSwing: false,
+					swordAngle: 0,
+					canJump: false,
+					color,
+				};
+			}
+
+			// Function to update remote player
+			function updateRemotePlayer(data) {
+				if (data.id === localPlayerId) return; // Skip local player
+				if (!players[data.id]) {
+					createPlayer(data.id, data.torso.x, data.torso.y, "#00ff00"); // Green for remote players
+				}
+				const player = players[data.id];
+				Matter.Body.setPosition(player.torso, data.torso);
+				Matter.Body.setAngle(player.torso, data.torso.angle);
+				Matter.Body.setPosition(player.sword, data.sword);
+				Matter.Body.setAngle(player.sword, data.sword.angle);
+				player.isMouseDown = data.isMouseDown;
+				player.swordSwing = data.swordSwing;
+				player.swordAngle = data.swordAngle;
+			}
+
+			// Create platforms
+			const platform1 = Bodies.rectangle(300, 400, 200, 20, {
+				isStatic: true,
+				render: { fillStyle: "#888" },
+			});
+			const platform2 = Bodies.rectangle(600, 300, 200, 20, {
+				isStatic: true,
+				render: { fillStyle: "#888" },
+			});
+			const platform3 = Bodies.rectangle(1200, 500, 200, 20, {
+				isStatic: true,
+				render: { fillStyle: "#888" },
+			});
+			const platform4 = Bodies.rectangle(1600, 300, 200, 20, {
+				isStatic: true,
+				render: { fillStyle: "#888" },
+			});
+
+			// Create multiple spider enemies
+			const spiders = [];
+			const spiderPositions = [
+				{ x: 1200, y: 200, type: "chaser" },
+				{
+					x: 800,
+					y: 300,
+					type: "patroller",
+					patrolRange: { minX: 700, maxX: 900 },
+				},
+				{ x: 1500, y: 400, type: "shooter" },
+			];
+
+			spiderPositions.forEach((pos) => {
+				const spiderBody = Bodies.circle(pos.x, pos.y, 30, {
+					friction: 0.1,
+					frictionAir: 0.01,
+					restitution: 0.3,
+					render: { fillStyle: "#333333" },
+					mass: 2,
+				});
+				const spiderHead = Bodies.circle(pos.x, pos.y - 30, 15, {
+					friction: 0.1,
+					frictionAir: 0.01,
+					restitution: 0.3,
+					render: { fillStyle: "#222222" },
+					mass: 0.5,
+				});
+				const spiderWebGlandLeft = Bodies.rectangle(
+					pos.x - 20,
+					pos.y + 30,
+					10,
+					20,
+					{
+						friction: 0.1,
+						frictionAir: 0.01,
+						restitution: 0.3,
+						render: { fillStyle: "#666666" },
+						mass: 0.3,
+					}
+				);
+				const spiderWebGlandRight = Bodies.rectangle(
+					pos.x + 20,
+					pos.y + 30,
+					20,
+					30,
+					{
+						friction: 0.1,
+						frictionAir: 0.01,
+						restitution: 0.3,
+						render: { fillStyle: "#666666" },
+						mass: 0.3,
+					}
+				);
+				const spiderLegs = [];
+				const legCount = 8;
+				for (let i = 0; i < legCount; i++) {
+					const angle = (i / legCount) * 2 * Math.PI;
+					const leg = Bodies.rectangle(
+						pos.x + Math.cos(angle) * 40,
+						pos.y + Math.sin(angle) * 40,
+						40,
+						10,
+						{
+							friction: 0.6,
+							frictionAir: 0.01,
+							restitution: 0.3,
+							render: { fillStyle: "#555555" },
+							mass: 0.3,
+						}
+					);
+					const legConstraint = Constraint.create({
+						bodyA: spiderBody,
+						bodyB: leg,
+						length: 40,
+						stiffness: 0.8,
+					});
+					spiderLegs.push({ leg, constraint: legConstraint });
+				}
+
+				const headConstraint = Constraint.create({
+					bodyA: spiderBody,
+					bodyB: spiderHead,
+					length: 25,
+					stiffness: 0.8,
+				});
+				const glandLeftConstraint = Constraint.create({
+					bodyA: spiderBody,
+					bodyB: spiderWebGlandLeft,
+					length: 20,
+					stiffness: 0.8,
+				});
+				const glandRightConstraint = Constraint.create({
+					bodyA: spiderBody,
+					bodyB: spiderWebGlandRight,
+					length: 20,
+					stiffness: 0.8,
+				});
+
+				const spiderParts = [
+					spiderBody,
+					spiderHead,
+					spiderWebGlandLeft,
+					spiderWebGlandRight,
+					...spiderLegs.map((l) => l.leg),
+				];
+				const spiderConstraints = [
+					headConstraint,
+					glandLeftConstraint,
+					glandRightConstraint,
+					...spiderLegs.map((l) => l.constraint),
+				];
+
+				Composite.add(world, [...spiderParts, ...spiderConstraints]);
+
+				spiders.push({
+					body: spiderBody,
+					parts: spiderParts,
+					constraints: spiderConstraints,
+					legs: spiderLegs,
+					glands: [spiderWebGlandLeft, spiderWebGlandRight],
+					type: pos.type,
+					patrolRange: pos.patrolRange || null,
+					split: false,
+					lastWebShot: 0,
+					recombineEffect: null,
+				});
+			});
+
+			// Add static bodies to the world
+			Composite.add(world, [
+				ground,
+				topBorder,
+				leftBorder,
+				rightBorder,
+				platform1,
+				platform2,
+				platform3,
+				platform4,
+			]);
+
+			// Run the renderer and runner
+			Render.run(render);
+			const runner = Runner.create();
+			Runner.run(runner, engine);
+
+			// Mouse controls
+			const mouse = Mouse.create(render.canvas);
+			const mouseConstraint = MouseConstraint.create(engine, {
+				mouse: mouse,
+				constraint: { stiffness: 0.2, render: { visible: false } },
+			});
+			Composite.add(world, mouseConstraint);
+
+			// Input handling
+			let isMouseDown = false;
+			const keys = {};
+			document.addEventListener("mousedown", (event) => {
+				if (event.button === 0 && localPlayerId) {
+					isMouseDown = true;
+					players[localPlayerId].isMouseDown = true;
+				}
+			});
+			document.addEventListener("mouseup", (event) => {
+				if (event.button === 0 && localPlayerId && isMouseDown) {
+					isMouseDown = false;
+					players[localPlayerId].isMouseDown = false;
+					slashSword(localPlayerId);
+				}
+			});
+			document.addEventListener("keydown", (event) => {
+				keys[event.key] = true;
+			});
+			document.addEventListener("keyup", (event) => {
+				keys[event.key] = false;
+			});
+
+			// Collision detection for jumping and spider knockback
+			Matter.Events.on(engine, "collisionStart", (event) => {
+				event.pairs.forEach((pair) => {
+					for (const id in players) {
+						const player = players[id];
+						if (player.parts.includes(pair.bodyA) && pair.bodyB.isStatic) {
+							player.canJump = true;
+						}
+						if (player.parts.includes(pair.bodyB) && pair.bodyA.isStatic) {
+							player.canJump = true;
+						}
+						spiders.forEach((spider) => {
+							if (
+								player.parts.includes(pair.bodyA) &&
+								spider.parts.includes(pair.bodyB)
+							) {
+								Matter.Body.applyForce(player.torso, player.torso.position, {
+									x: -0.05,
+									y: -0.03,
+								});
+							}
+							if (
+								player.parts.includes(pair.bodyB) &&
+								spider.parts.includes(pair.bodyA)
+							) {
+								Matter.Body.applyForce(player.torso, player.torso.position, {
+									x: 0.05,
+									y: -0.03,
+								});
+							}
+						});
+					}
+				});
+			});
+
+			// Function for spider to shoot web
+			function shootWeb(gland, spider) {
+				const now = Date.now();
+				if (
+					now - spider.lastWebShot <
+					(spider.type === "shooter" ? 1000 : 2000)
+				)
+					return;
+				spider.lastWebShot = now;
+
+				const closestPlayer = Object.values(players).reduce(
+					(closest, player) => {
+						const distance = Vector.magnitude(
+							Vector.sub(player.torso.position, gland.position)
+						);
+						return distance <
+							Vector.magnitude(
+								Vector.sub(closest.torso.position, gland.position)
+							)
+							? player
+							: closest;
+					},
+					Object.values(players)[0]
+				);
+				const web = Bodies.circle(gland.position.x, gland.position.y, 5, {
+					friction: 0,
+					frictionAir: 0.01,
+					restitution: 0.5,
+					render: { fillStyle: "#ff0000" },
+					mass: 0.1,
+				});
+				const direction = Vector.sub(
+					closestPlayer.torso.position,
+					gland.position
+				);
+				const force = Vector.mult(Vector.normalise(direction), 0.02);
+				Matter.Body.applyForce(web, web.position, force);
+				Composite.add(world, web);
+				setTimeout(() => Composite.remove(world, web), 3000);
+			}
+
+			// Sword mechanics
+			function slashSword(playerId) {
+				const player = players[playerId];
+				player.swordSwing = true;
+				player.swordAngle = -Math.PI / 4;
+				setTimeout(() => {
+					player.swordSwing = false;
+				}, 200);
+			}
+
+			// Spider AI with smooth recombination effect
+			function updateSpider(spider) {
+				const closestPlayer = Object.values(players).reduce(
+					(closest, player) => {
+						const distance = Vector.magnitude(
+							Vector.sub(player.torso.position, spider.body.position)
+						);
+						return distance <
+							Vector.magnitude(
+								Vector.sub(closest.torso.position, spider.body.position)
+							)
+							? player
+							: closest;
+					},
+					Object.values(players)[0]
+				);
+				const direction = Vector.sub(
+					closestPlayer.torso.position,
+					spider.body.position
+				);
+				const distance = Vector.magnitude(direction);
+
+				Matter.Body.applyForce(spider.body, spider.body.position, {
+					x: 0,
+					y: -0.001,
+				});
+
+				if (spider.type === "chaser" && distance > 50) {
+					const force = Vector.mult(Vector.normalise(direction), 0.003);
+					Matter.Body.applyForce(spider.body, spider.body.position, force);
+				} else if (spider.type === "patroller") {
+					if (spider.body.position.x < spider.patrolRange.minX) {
+						Matter.Body.setVelocity(spider.body, {
+							x: 2,
+							y: spider.body.velocity.y,
+						});
+					} else if (spider.body.position.x > spider.patrolRange.maxX) {
+						Matter.Body.setVelocity(spider.body, {
+							x: -2,
+							y: spider.body.velocity.y,
+						});
+					}
+				} else if (spider.type === "shooter" && distance > 300) {
+					const force = Vector.mult(Vector.normalise(direction), 0.002);
+					Matter.Body.applyForce(spider.body, spider.body.position, force);
+				}
+
+				if (distance < 300) {
+					spider.glands.forEach((gland) => shootWeb(gland, spider));
+				}
+
+				if (distance < 200 && !spider.split) {
+					spider.split = true;
+					spider.constraints.forEach((c) => Composite.remove(world, c));
+					spider.legs.forEach((l) => {
+						const legDirection = Vector.sub(
+							l.leg.position,
+							spider.body.position
+						);
+						Matter.Body.applyForce(
+							l.leg,
+							l.leg.position,
+							Vector.mult(Vector.normalise(legDirection), 0.03)
+						);
+					});
+					const head = spider.parts[1];
+					const glandLeft = spider.glands[0];
+					const glandRight = spider.glands[1];
+					Matter.Body.applyForce(head, head.position, { x: 0, y: -0.03 });
+					Matter.Body.applyForce(glandLeft, glandLeft.position, {
+						x: -0.03,
+						y: 0,
+					});
+					Matter.Body.applyForce(glandRight, glandRight.position, {
+						x: 0.03,
+						y: 0,
+					});
+
+					setTimeout(() => {
+						const newHeadConstraint = Constraint.create({
+							bodyA: spider.body,
+							bodyB: head,
+							length: 25,
+							stiffness: 0.8,
+						});
+						const newGlandLeftConstraint = Constraint.create({
+							bodyA: spider.body,
+							bodyB: glandLeft,
+							length: 20,
+							stiffness: 0.8,
+						});
+						const newGlandRightConstraint = Constraint.create({
+							bodyA: spider.body,
+							bodyB: glandRight,
+							length: 20,
+							stiffness: 0.8,
+						});
+						spider.legs.forEach((l) => {
+							const newConstraint = Constraint.create({
+								bodyA: spider.body,
+								bodyB: l.leg,
+								length: 40,
+								stiffness: 0.8,
+							});
+							Composite.add(world, newConstraint);
+							l.constraint = newConstraint;
+						});
+						Composite.add(world, [
+							newHeadConstraint,
+							newGlandLeftConstraint,
+							newGlandRightConstraint,
+						]);
+						spider.constraints.length = 0;
+						spider.constraints.push(
+							newHeadConstraint,
+							newGlandLeftConstraint,
+							newGlandRightConstraint,
+							...spider.legs.map((l) => l.constraint)
+						);
+						spider.split = false;
+						spider.recombineEffect = { time: 0, duration: 60 };
+					}, 2000);
+				}
+
+				if (spider.recombineEffect) {
+					const effect = spider.recombineEffect;
+					effect.time++;
+					const progress = effect.time / effect.duration;
+					const scale = 1 + 0.2 * Math.sin(progress * Math.PI);
+					const alpha = 1 - progress;
+
+					spider.parts.forEach((part) => {
+						Matter.Body.scale(
+							part,
+							scale / part.scalePrev || 1,
+							scale / part.scalePrev || 1
+						);
+						part.scalePrev = scale;
+						part.render.opacity = alpha;
+					});
+
+					if (effect.time >= effect.duration) {
+						spider.parts.forEach((part) => {
+							Matter.Body.scale(part, 1 / part.scalePrev, 1 / part.scalePrev);
+							part.render.opacity = 1;
+							delete part.scalePrev;
+						});
+						spider.recombineEffect = null;
+					}
+				}
+			}
+
+			// Update function for controls and game logic
+			Matter.Events.on(engine, "beforeUpdate", () => {
+				if (!localPlayerId) return;
+
+				const localPlayer = players[localPlayerId];
+				const mouseWorldPos = {
+					x: mouse.position.x + render.bounds.min.x,
+					y: mouse.position.y + render.bounds.min.y,
+				};
+
+				// Local player controls
+				if (isMouseDown) {
+					const direction = Vector.sub(
+						mouseWorldPos,
+						localPlayer.torso.position
+					);
+					const distance = Vector.magnitude(direction);
+					if (distance > 10) {
+						const force = Vector.mult(Vector.normalise(direction), 0.005);
+						Matter.Body.applyForce(
+							localPlayer.torso,
+							localPlayer.torso.position,
+							force
+						);
+					}
+				}
+
+				if (keys[" "] && localPlayer.canJump) {
+					Matter.Body.applyForce(
+						localPlayer.torso,
+						localPlayer.torso.position,
+						{ x: 0, y: -0.02 }
+					);
+					localPlayer.canJump = false;
+				}
+
+				const angleToMouse = Math.atan2(
+					mouseWorldPos.y - localPlayer.torso.position.y,
+					mouseWorldPos.x - localPlayer.torso.position.x
+				);
+				Matter.Body.setAngle(localPlayer.torso, angleToMouse);
+
+				if (!localPlayer.swordSwing) {
+					const swordRange = 150;
+					const directionToMouse = Vector.sub(
+						mouseWorldPos,
+						localPlayer.torso.position
+					);
+					const distanceToMouse = Vector.magnitude(directionToMouse);
+					const targetPos =
+						distanceToMouse > swordRange
+							? Vector.add(
+									localPlayer.torso.position,
+									Vector.mult(Vector.normalise(directionToMouse), swordRange)
+							  )
+							: mouseWorldPos;
+					Matter.Body.setPosition(localPlayer.sword, targetPos);
+					Matter.Body.setAngle(localPlayer.sword, angleToMouse);
+				}
+
+				if (localPlayer.swordSwing) {
+					localPlayer.swordAngle += 0.2;
+					if (localPlayer.swordAngle > Math.PI / 4)
+						localPlayer.swordSwing = false;
+					Matter.Body.setAngle(
+						localPlayer.sword,
+						localPlayer.swordAngle + angleToMouse
+					);
+				}
+
+				// Send local player state to server
+				ws.send(
+					JSON.stringify({
+						type: "update",
+						id: localPlayerId,
+						torso: {
+							x: localPlayer.torso.position.x,
+							y: localPlayer.torso.position.y,
+							angle: localPlayer.torso.angle,
+						},
+						sword: {
+							x: localPlayer.sword.position.x,
+							y: localPlayer.sword.position.y,
+							angle: localPlayer.sword.angle,
+						},
+						isMouseDown: localPlayer.isMouseDown,
+						swordSwing: localPlayer.swordSwing,
+						swordAngle: localPlayer.swordAngle,
+					})
+				);
+
+				// Update spiders
+				spiders.forEach((spider) => updateSpider(spider));
+
+				// Update camera to follow local player
+				const cameraX = localPlayer.torso.position.x - window.innerWidth / 2;
+				const cameraY = localPlayer.torso.position.y - window.innerHeight / 2;
+				Render.lookAt(render, {
+					min: { x: cameraX, y: cameraY },
+					max: {
+						x: cameraX + window.innerWidth,
+						y: cameraY + window.innerHeight,
+					},
+				});
+			});
+
+			// Adjust canvas on resize
+			window.addEventListener("resize", () => {
+				render.canvas.width = window.innerWidth;
+				render.canvas.height = window.innerHeight;
+			});
+		</script>
+	</body>
+</html>
